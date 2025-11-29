@@ -7,20 +7,24 @@ ignore =
 # Не проверять код в перечисленных директориях:
 exclude = 
     tests/,
-    */migrations/,
+    */migrations/*,
     venv/,
-    */venv/,
+    */venv/*,
     env/,
-    */env/,
+    */env/*,
     .git,
     __pycache__,
     backend/collected_static/,
     static/,
-    media/
-
-# Не проверять указанные файлы на соответствие определённым правилам:
-per-file-ignores =
-    */settings.py:E501   # Игнорировать длинные строки в settings.py
+    media/,
+    *.pyc
 
 # Дополнительные настройки для лучшей читаемости
 max-line-length = 79
+
+# Игнорировать E501 в конкретных файлах/паттернах
+per-file-ignores = 
+    */settings.py: E501,
+    backend/backend/settings.py: E501,    # ЯВНО указываем путь
+    backend/api/migrations/*: E501        # И миграции на всякий случай
+
