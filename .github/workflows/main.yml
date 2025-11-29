@@ -1,0 +1,278 @@
+name: Taski CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  DOCKER_USERNAME: sergiant
+
+jobs:
+  # 🔍 ТЕСТИРОВАНИЕ БЭКЕНДА
+  backend-tests:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:13.10
+        env:
+          POSTGRES_USER: django_user
+          POSTGRES_PASSWORD: django_password
+          POSTGRES_DB: django_db
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.12
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8==6.0.0
+        pip install -r ./backend/requirements.txt
+
+    - name: Run flake8
+      run: |
+        python -m flake8 backend/
+        # Flake8 автоматически найдет setup.cfg и применит настройки
+
+    - name: Run Django tests
+      env:
+        POSTGRES_USER: django_user
+        POSTGRES_PASSWORD: django_password
+        POSTGRES_DB: django_db
+        DB_HOST: 127.0.0.1
+        DB_PORT: 5432
+      run: |
+        cd backend
+        python manage.py test
+
+  # 🔍 ТЕСТИРОВАНИЕ ФРОНТЕНДА
+  frontend-tests:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+        
+    - name: Install dependencies
+      run: |
+        cd frontend
+        npm ci
+        
+    - name: Run tests
+      run: |
+        cd frontend
+        npm run test
+
+  # 🐳 СБОРКА И ПУШ ОБРАЗОВ
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-tests]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+      
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+        
+    - name: Build and push backend
+      uses: docker/build-push-action@v4
+      with:
+        context: ./backend
+        push: true
+        tags: ${{ env.DOCKER_USERNAME }}/taski_backend:latest
+        
+    - name: Build and push frontend
+      uses: docker/build-push-action@v4
+      with:
+        context: ./frontend
+        push: true
+        tags: ${{ env.DOCKER_USERNAME }}/taski_frontend:latest
+        
+    - name: Build and push gateway
+      uses: docker/build-push-action@v4
+      with:
+        context: ./gateway
+        push: true
+        tags: ${{ env.DOCKER_USERNAME }}/taski_gateway:latest
+
+  # 🚀 ДЕПЛОЙ НА СЕРВЕР
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    
+    steps:
+      # 📥 Клонируем репозиторий на раннер
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      # 📋 Копируем docker-compose.production.yml на сервер
+      - name: Copy docker-compose to server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          source: "docker-compose.production.yml"
+          target: "taski"
+      
+      # 🔐 Создаем .env файл на сервере с продакшен-настройками
+      - name: Create .env file on server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          script: |
+            cd taski
+            # Создаем .env файл с переменными окружения
+            cat > .env << 'EOF'
+            # База данных PostgreSQL
+            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+            DB_HOST=db
+            DB_PORT=5432
+            
+            # Настройки Django
+            DEBUG=False
+            SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+            ALLOWED_HOSTS=51.250.16.90,localhost,127.0.0.1
+            
+            # Дополнительные настройки (опционально)
+            CSRF_TRUSTED_ORIGINS=https://51.250.16.90
+            EOF
+            echo "✅ .env файл создан"
+      
+      # 🐳 Обновляем и перезапускаем контейнеры
+      - name: Update and restart containers
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          script: |
+            cd taski
+            echo "🚀 Начинаем деплой..."
+            
+            # Скачиваем последние версии образов с Docker Hub
+            echo "📥 Загружаем обновленные образы..."
+            sudo docker compose -f docker-compose.production.yml pull
+            
+            # Останавливаем и удаляем старые контейнеры
+            echo "🛑 Останавливаем старые контейнеры..."
+            sudo docker compose -f docker-compose.production.yml down
+            
+            # Запускаем новые контейнеры в фоновом режиме
+            echo "▶️ Запускаем новые контейнеры..."
+            sudo docker compose -f docker-compose.production.yml up -d
+            
+            # Ждем пока контейнеры полностью запустятся
+            echo "⏳ Ждем запуска контейнеров..."
+            sleep 15
+            
+            # Проверяем статус контейнеров
+            echo "📊 Статус контейнеров:"
+            sudo docker compose -f docker-compose.production.yml ps
+      
+      # 🗃️ Выполняем миграции базы данных
+      - name: Run database migrations
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          script: |
+            cd taski
+            echo "🗃️ Выполняем миграции базы данных..."
+            sudo docker compose -f docker-compose.production.yml exec backend python manage.py migrate
+            echo "✅ Миграции выполнены успешно"
+      
+      # 📦 Собираем статические файлы Django
+      - name: Collect static files
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          script: |
+            cd taski
+            echo "📦 Собираем статические файлы..."
+            sudo docker compose -f docker-compose.production.yml exec backend python manage.py collectstatic --noinput
+            echo "✅ Статические файлы собраны"
+      
+      # 📁 Копируем статику в общий volume для Nginx
+      - name: Copy static files to shared volume
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          script: |
+            cd taski
+            echo "📁 Копируем статику в volume..."
+            sudo docker compose -f docker-compose.production.yml exec backend cp -r /app/collected_static/. /backend_static/static/
+            echo "✅ Статика скопирована в volume"
+      
+      # ✅ Финальная проверка
+      - name: Final check
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          script: |
+            cd taski
+            echo "🔍 Финальная проверка..."
+            echo "📊 Статус всех контейнеров:"
+            sudo docker compose -f docker-compose.production.yml ps
+            
+            echo "🐳 Запущенные контейнеры:"
+            sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            
+            echo "💾 Используемые volumes:"
+            sudo docker volume ls
+            
+            echo "✅ Деплой завершен успешно!"
+            echo "🌐 Приложение доступно по адресу: http://51.250.16.90"
+
+  # 📨 УВЕДОМЛЕНИЕ В TELEGRAM
+  notify:
+    runs-on: ubuntu-latest
+    needs: deploy
+    
+    steps:
+    - name: Send Telegram notification
+      uses: appleboy/telegram-action@master
+      with:
+        to: ${{ secrets.TELEGRAM_TO }}
+        token: ${{ secrets.TELEGRAM_TOKEN }}
+        message: |
+          🚀 Taski успешно обновлён!
+          Сервер: 51.250.16.90
+          Время: ${{ github.event.head_commit.timestamp }}
+          Коммит: ${{ github.event.head_commit.message }}
