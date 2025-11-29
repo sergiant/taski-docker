@@ -40,7 +40,6 @@ jobs:
     - name: Run flake8
       run: |
         python -m flake8 backend/ --ignore=W503,F811,E501 --exclude="*/migrations/*,*/venv/*,*/env/*" --max-line-length=119
-        # Flake8 автоматически найдет setup.cfg и применит настройки
 
     - name: Run Django tests
       env:
@@ -119,146 +118,199 @@ jobs:
     needs: build-and-push
     
     steps:
-      # 📥 Клонируем репозиторий на раннер
-      - name: Checkout code
-        uses: actions/checkout@v3
-      
-      # 📋 Копируем docker-compose.production.yml на сервер
-      - name: Copy docker-compose to server
-        uses: appleboy/scp-action@master
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          passphrase: ${{ secrets.SSH_PASSPHRASE }}
-          source: "docker-compose.production.yml"
-          target: "taski"
-      
-      # 🔐 Создаем .env файл на сервере с продакшен-настройками
-      - name: Create .env file on server
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          passphrase: ${{ secrets.SSH_PASSPHRASE }}
-          script: |
-            cd taski
-            # Создаем .env файл с переменными окружения
-            cat > .env << 'EOF'
-            # База данных PostgreSQL
-            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-            DB_HOST=db
-            DB_PORT=5432
-            
-            # Настройки Django
-            DEBUG=False
-            SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
-            ALLOWED_HOSTS=51.250.16.90,localhost,127.0.0.1
-            
-            # Дополнительные настройки (опционально)
-            CSRF_TRUSTED_ORIGINS=https://51.250.16.90
-            EOF
-            echo "✅ .env файл создан"
-      
-      # 🐳 Обновляем и перезапускаем контейнеры
-      - name: Update and restart containers
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          passphrase: ${{ secrets.SSH_PASSPHRASE }}
-          script: |
-            cd taski
-            echo "🚀 Начинаем деплой..."
-            
-            # Скачиваем последние версии образов с Docker Hub
-            echo "📥 Загружаем обновленные образы..."
-            sudo docker compose -f docker-compose.production.yml pull
-            
-            # Останавливаем и удаляем старые контейнеры
-            echo "🛑 Останавливаем старые контейнеры..."
-            sudo docker compose -f docker-compose.production.yml down
-            
-            # Запускаем новые контейнеры в фоновом режиме
-            echo "▶️ Запускаем новые контейнеры..."
-            sudo docker compose -f docker-compose.production.yml up -d
-            
-            # Ждем пока контейнеры полностью запустятся
-            echo "⏳ Ждем запуска контейнеров..."
-            sleep 15
-            
-            # Проверяем статус контейнеров
-            echo "📊 Статус контейнеров:"
-            sudo docker compose -f docker-compose.production.yml ps
-      
-      # 🗃️ Выполняем миграции базы данных
-      - name: Run database migrations
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          passphrase: ${{ secrets.SSH_PASSPHRASE }}
-          script: |
-            cd taski
-            echo "🗃️ Выполняем миграции базы данных..."
-            sudo docker compose -f docker-compose.production.yml exec backend python manage.py migrate
-            echo "✅ Миграции выполнены успешно"
-      
-      # 📦 Собираем статические файлы Django
-      - name: Collect static files
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          passphrase: ${{ secrets.SSH_PASSPHRASE }}
-          script: |
-            cd taski
-            echo "📦 Собираем статические файлы..."
-            sudo docker compose -f docker-compose.production.yml exec backend python manage.py collectstatic --noinput
-            echo "✅ Статические файлы собраны"
-      
-      # 📁 Копируем статику в общий volume для Nginx
-      - name: Copy static files to shared volume
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          passphrase: ${{ secrets.SSH_PASSPHRASE }}
-          script: |
-            cd taski
-            echo "📁 Копируем статику в volume..."
-            sudo docker compose -f docker-compose.production.yml exec backend cp -r /app/collected_static/. /backend_static/static/
-            echo "✅ Статика скопирована в volume"
-      
-      # ✅ Финальная проверка
-      - name: Final check
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          passphrase: ${{ secrets.SSH_PASSPHRASE }}
-          script: |
-            cd taski
-            echo "🔍 Финальная проверка..."
-            echo "📊 Статус всех контейнеров:"
-            sudo docker compose -f docker-compose.production.yml ps
-            
-            echo "🐳 Запущенные контейнеры:"
-            sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-            
-            echo "💾 Используемые volumes:"
-            sudo docker volume ls
-            
-            echo "✅ Деплой завершен успешно!"
-            echo "🌐 Приложение доступно по адресу: http://51.250.16.90"
+    - uses: actions/checkout@v3
+    
+    # 📁 СОЗДАЕМ ПАПКУ taski-docker НА СЕРВЕРЕ
+    - name: Create taski-docker directory on server
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        passphrase: ${{ secrets.SSH_PASSPHRASE }}
+        script: |
+          echo "📁 Создаем структуру папок..."
+          mkdir -p taski-docker/backend
+          mkdir -p taski-docker/frontend  
+          mkdir -p taski-docker/gateway
+          echo "✅ Структура папок создана"
+    
+    # 📋 Копируем ВСЕ необходимые файлы на сервер
+    - name: Copy project files to server
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        passphrase: ${{ secrets.SSH_PASSPHRASE }}
+        source: |
+          docker-compose.production.yml
+          backend/Dockerfile
+          backend/requirements.txt
+          frontend/Dockerfile
+          frontend/package.json
+          frontend/package-lock.json
+          gateway/Dockerfile
+          gateway/nginx.conf
+        target: "taski-docker"
+    
+    # 🔐 Создаем .env файл на сервере с доменом yahost.myvnc.com
+    - name: Create .env file on server
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        passphrase: ${{ secrets.SSH_PASSPHRASE }}
+        script: |
+          cd taski-docker
+          cat > .env << 'EOF'
+          # База данных PostgreSQL
+          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+          DB_HOST=db
+          DB_PORT=5432
+          
+          # Настройки Django
+          DEBUG=False
+          SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+          ALLOWED_HOSTS=51.250.16.90,localhost,127.0.0.1,yahost.myvnc.com
+          CSRF_TRUSTED_ORIGINS=https://51.250.16.90,https://yahost.myvnc.com
+          EOF
+          echo "✅ .env файл создан с доменом yahost.myvnc.com"
+    
+    # 🐳 Обновляем и перезапускаем контейнеры
+    - name: Update and restart containers
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        passphrase: ${{ secrets.SSH_PASSPHRASE }}
+        script: |
+          cd taski-docker
+          echo "🚀 Начинаем деплой..."
+          
+          # Скачиваем последние версии образов с Docker Hub
+          echo "📥 Загружаем обновленные образы..."
+          sudo docker compose -f docker-compose.production.yml pull
+          
+          # Останавливаем и удаляем старые контейнеры
+          echo "🛑 Останавливаем старые контейнеры..."
+          sudo docker compose -f docker-compose.production.yml down
+          
+          # Запускаем новые контейнеры в фоновом режиме
+          echo "▶️ Запускаем новые контейнеры..."
+          sudo docker compose -f docker-compose.production.yml up -d
+          
+          # Ждем пока контейнеры полностью запустятся
+          echo "⏳ Ждем запуска контейнеров..."
+          sleep 15
+          
+          # Проверяем статус контейнеров
+          echo "📊 Статус контейнеров:"
+          sudo docker compose -f docker-compose.production.yml ps
+    
+    # 🗃️ Выполняем миграции базы данных
+    - name: Run database migrations
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        passphrase: ${{ secrets.SSH_PASSPHRASE }}
+        script: |
+          cd taski-docker
+          echo "🗃️ Выполняем миграции базы данных..."
+          sudo docker compose -f docker-compose.production.yml exec backend python manage.py migrate
+          echo "✅ Миграции выполнены успешно"
+    
+    # 📦 Собираем статические файлы Django
+    - name: Collect static files
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        passphrase: ${{ secrets.SSH_PASSPHRASE }}
+        script: |
+          cd taski-docker
+          echo "📦 Собираем статические файлы..."
+          sudo docker compose -f docker-compose.production.yml exec backend python manage.py collectstatic --noinput
+          echo "✅ Статические файлы собраны"
+    
+    # 📁 Копируем статику в общий volume для Nginx
+    - name: Copy static files to shared volume
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        passphrase: ${{ secrets.SSH_PASSPHRASE }}
+        script: |
+          cd taski-docker
+          echo "📁 Копируем статику в volume..."
+          sudo docker compose -f docker-compose.production.yml exec backend cp -r /app/collected_static/. /backend_static/static/
+          echo "✅ Статика скопирована в volume"
+    
+    # 🌐 Настраиваем Nginx для домена yahost.myvnc.com
+    - name: Configure Nginx for domain
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        passphrase: ${{ secrets.SSH_PASSPHRASE }}
+        script: |
+          echo "🌐 Настраиваем Nginx для домена yahost.myvnc.com..."
+          # Создаем конфиг для домена
+          sudo tee /etc/nginx/sites-available/yahost.myvnc.com > /dev/null << 'EOF'
+          server {
+              listen 80;
+              server_name yahost.myvnc.com 51.250.16.90;
+
+              location / {
+                  proxy_set_header Host $http_host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_pass http://127.0.0.1:8000;
+              }
+          }
+          EOF
+          
+          # Активируем конфиг
+          sudo ln -sf /etc/nginx/sites-available/yahost.myvnc.com /etc/nginx/sites-enabled/
+          
+          # Проверяем конфигурацию и перезагружаем
+          sudo nginx -t && sudo systemctl reload nginx
+          echo "✅ Nginx настроен для домена yahost.myvnc.com"
+    
+    # ✅ Финальная проверка
+    - name: Final check
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        passphrase: ${{ secrets.SSH_PASSPHRASE }}
+        script: |
+          cd taski-docker
+          echo "🔍 Финальная проверка..."
+          echo "📊 Статус всех контейнеров:"
+          sudo docker compose -f docker-compose.production.yml ps
+          
+          echo "🐳 Запущенные контейнеры:"
+          sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          
+          echo "💾 Используемые volumes:"
+          sudo docker volume ls
+          
+          echo "✅ Деплой завершен успешно!"
+          echo "🌐 Приложение доступно по адресам:"
+          echo "   http://51.250.16.90"
+          echo "   http://yahost.myvnc.com"
 
   # 📨 УВЕДОМЛЕНИЕ В TELEGRAM
   notify:
@@ -274,5 +326,6 @@ jobs:
         message: |
           🚀 Taski успешно обновлён!
           Сервер: 51.250.16.90
+          Домен: yahost.myvnc.com
           Время: ${{ github.event.head_commit.timestamp }}
           Коммит: ${{ github.event.head_commit.message }}
