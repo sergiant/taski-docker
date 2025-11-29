@@ -136,23 +136,46 @@ jobs:
           echo "✅ Структура папок создана"
     
     # 📋 Копируем ВСЕ необходимые файлы на сервер
-    - name: Copy project files to server
+    - name: Copy docker-compose
       uses: appleboy/scp-action@master
       with:
         host: ${{ secrets.SERVER_HOST }}
         username: ${{ secrets.SERVER_USER }}
         key: ${{ secrets.SSH_KEY }}
         passphrase: ${{ secrets.SSH_PASSPHRASE }}
-        source: |
-          docker-compose.production.yml
-          backend/Dockerfile
-          backend/requirements.txt
-          frontend/Dockerfile
-          frontend/package.json
-          frontend/package-lock.json
-          gateway/Dockerfile
-          gateway/nginx.conf
+        source: "docker-compose.production.yml"
         target: "taski-docker"
+        
+    - name: Copy backend files
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        passphrase: ${{ secrets.SSH_PASSPHRASE }}
+        source: "backend/Dockerfile,backend/requirements.txt"
+        target: "taski-docker/backend"
+        
+    - name: Copy frontend files
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        passphrase: ${{ secrets.SSH_PASSPHRASE }}
+        source: "frontend/Dockerfile,frontend/package.json,frontend/package-lock.json"
+        target: "taski-docker/frontend"
+        
+    - name: Copy gateway files
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        passphrase: ${{ secrets.SSH_PASSPHRASE }}
+        source: "gateway/Dockerfile,gateway/nginx.conf"
+        target: "taski-docker/gateway"
+        
     
     # 🔐 Создаем .env файл на сервере с доменом yahost.myvnc.com
     - name: Create .env file on server
